@@ -53,6 +53,153 @@ def test_build_remote_kwargs_keeps_max_tokens_for_openai_gpt41(monkeypatch):
     assert "max_completion_tokens" not in kwargs
 
 
+def test_normalize_remote_response_preserves_choice_finish_reason(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1")
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::qwen3:30b-a3b")
+
+    msg, usage = client._normalize_remote_response(
+        {
+            "id": "chatcmpl-test",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 0,
+            },
+        },
+        target,
+    )
+
+    assert msg["finish_reason"] == "stop"
+    assert usage["provider"] == "openai-compatible"
+
+
+def test_openai_compatible_ollama_caps_default_max_tokens(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::qwen3-30b-a3b-16k")
+    kwargs = client._build_remote_kwargs(
+        target,
+        [{"role": "user", "content": "hi"}],
+        "medium",
+        8192,
+        "auto",
+        None,
+        None,
+    )
+
+    assert kwargs["max_tokens"] == 2048
+
+
+def test_openai_compatible_max_tokens_env_override(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_MAX_TOKENS", "1024")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::qwen3-30b-a3b-16k")
+    kwargs = client._build_remote_kwargs(
+        target,
+        [{"role": "user", "content": "hi"}],
+        "medium",
+        8192,
+        "auto",
+        None,
+        None,
+    )
+
+    assert kwargs["max_tokens"] == 1024
+
+
+def test_openai_compatible_max_tokens_zero_disables_cap(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_MAX_TOKENS", "0")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::qwen3-30b-a3b-16k")
+    kwargs = client._build_remote_kwargs(
+        target,
+        [{"role": "user", "content": "hi"}],
+        "medium",
+        8192,
+        "auto",
+        None,
+        None,
+    )
+
+    assert kwargs["max_tokens"] == 8192
+
+
+def test_openai_compatible_remote_endpoint_keeps_max_tokens_by_default(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://llm.example.test/v1")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::custom-model")
+    kwargs = client._build_remote_kwargs(
+        target,
+        [{"role": "user", "content": "hi"}],
+        "medium",
+        8192,
+        "auto",
+        None,
+        None,
+    )
+
+    assert kwargs["max_tokens"] == 8192
+
+
+def test_openai_compatible_ollama_compacts_prompt_for_context(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_CONTEXT_LENGTH", "4096")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::qwen3-30b-a3b-16k")
+    long_system = "## BIBLE.md\ncore rules\n\n## Large Context\n" + ("x" * 40000)
+    kwargs = client._build_remote_kwargs(
+        target,
+        [
+            {"role": "system", "content": long_system},
+            {"role": "user", "content": "hi"},
+        ],
+        "medium",
+        1024,
+        "auto",
+        None,
+        None,
+    )
+
+    assert "Compacted for local-model context" in kwargs["messages"][0]["content"]
+    assert len(kwargs["messages"][0]["content"]) < len(long_system)
+
+
+def test_openai_compatible_context_length_env_compacts_remote_endpoint(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_CONTEXT_LENGTH", "4096")
+
+    client = LLMClient()
+    target = client._resolve_remote_target("openai-compatible::custom-model")
+    long_system = "## BIBLE.md\ncore rules\n\n## Large Context\n" + ("x" * 40000)
+    kwargs = client._build_remote_kwargs(
+        target,
+        [
+            {"role": "system", "content": long_system},
+            {"role": "user", "content": "hi"},
+        ],
+        "medium",
+        1024,
+        "auto",
+        None,
+        None,
+    )
+
+    assert "Compacted for local-model context" in kwargs["messages"][0]["content"]
+
+
 def test_build_remote_kwargs_normalizes_tool_descriptions_for_openrouter():
     client = LLMClient()
     target = client._resolve_remote_target("anthropic/claude-sonnet-4.6")

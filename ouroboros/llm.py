@@ -10,6 +10,7 @@ import re
 import time
 import copy
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 from ouroboros.provider_models import normalize_anthropic_model_id, normalize_model_identity
 from ouroboros.utils import in_worker_process
@@ -19,6 +20,8 @@ log = logging.getLogger(__name__)
 DEFAULT_LIGHT_MODEL = "google/gemini-3.5-flash"
 _FALSE_LIKE_ENV_VALUES = {"", "0", "false", "no", "off"}
 _OPTIONAL_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+_OPENAI_COMPATIBLE_OLLAMA_DEFAULT_CONTEXT_LENGTH = 16384
+_OPENAI_COMPATIBLE_OLLAMA_DEFAULT_MAX_TOKENS = 2048
 
 
 class LocalContextTooLargeError(RuntimeError):
@@ -34,6 +37,26 @@ def _estimate_message_chars(messages: List[Dict[str, Any]]) -> int:
         else:
             total += len(str(content or ""))
     return total
+
+
+def _positive_int_env(name: str) -> Optional[int]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _is_ollama_openai_compatible_base_url(base_url: str) -> bool:
+    if not base_url:
+        return False
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").strip().lower()
+    port = parsed.port
+    return host in {"localhost", "127.0.0.1", "::1"} and (port in {None, 11434})
 
 
 def _split_markdown_sections(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -1830,6 +1853,34 @@ class LLMClient:
 
         return message, usage
 
+    @staticmethod
+    def _cap_openai_compatible_max_tokens(target: Dict[str, Any], max_tokens: int) -> int:
+        if str(target.get("provider") or "") != "openai-compatible":
+            return max_tokens
+        configured = os.environ.get("OPENAI_COMPATIBLE_MAX_TOKENS")
+        if configured is not None and str(configured).strip() == "0":
+            return max_tokens
+        configured_limit = _positive_int_env("OPENAI_COMPATIBLE_MAX_TOKENS")
+        if configured_limit is not None:
+            return min(max_tokens, configured_limit)
+        if _is_ollama_openai_compatible_base_url(str(target.get("base_url") or "")):
+            return min(max_tokens, _OPENAI_COMPATIBLE_OLLAMA_DEFAULT_MAX_TOKENS)
+        return max_tokens
+
+    @staticmethod
+    def _openai_compatible_context_length(target: Dict[str, Any]) -> int:
+        if str(target.get("provider") or "") != "openai-compatible":
+            return 0
+        configured = _positive_int_env("OPENAI_COMPATIBLE_CONTEXT_LENGTH")
+        if configured is not None:
+            return configured
+        if _is_ollama_openai_compatible_base_url(str(target.get("base_url") or "")):
+            return (
+                _positive_int_env("OLLAMA_CONTEXT_LENGTH")
+                or _OPENAI_COMPATIBLE_OLLAMA_DEFAULT_CONTEXT_LENGTH
+            )
+        return 0
+
     def _build_remote_kwargs(
         self,
         target: Dict[str, Any],
@@ -1843,6 +1894,12 @@ class LLMClient:
     ) -> Dict[str, Any]:
         messages = self._normalize_system_message_placement(messages)
         resolved_model = str(target.get("resolved_model") or "")
+        max_tokens = self._cap_openai_compatible_max_tokens(target, max_tokens)
+        compatible_ctx_len = self._openai_compatible_context_length(target)
+        if compatible_ctx_len > 0:
+            messages = self._prepare_messages_for_local_context(
+                messages, compatible_ctx_len, max_tokens
+            )
         token_limit_key = "max_tokens"
         if str(target.get("provider") or "") == "openai" and resolved_model.startswith("gpt-5"):
             token_limit_key = "max_completion_tokens"
@@ -1946,7 +2003,10 @@ class LLMClient:
         """Normalize an OpenAI-compatible response; skip_cost_fetch keeps no_proxy pure."""
         usage = resp_dict.get("usage") or {}
         choices = resp_dict.get("choices") or [{}]
-        msg = dict((choices[0] if choices else {}).get("message") or {})
+        choice = choices[0] if choices else {}
+        msg = dict(choice.get("message") or {})
+        if "finish_reason" not in msg and choice.get("finish_reason") is not None:
+            msg["finish_reason"] = choice.get("finish_reason")
         if resp_dict.get("id") and "response_id" not in msg:
             msg["response_id"] = resp_dict["id"]
 
