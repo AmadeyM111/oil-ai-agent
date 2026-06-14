@@ -20,8 +20,34 @@ from ouroboros.utils import atomic_write_json
 DEFAULT_COLAB_APP_ROOT = "/content/drive/MyDrive/Ouroboros"
 DEFAULT_COLAB_REPO_DIR = "/content/ouroboros_repo"
 DEFAULT_OFFICIAL_REPO_URL = "https://github.com/razzant/ouroboros.git"
+GROQ_OPENAI_COMPATIBLE_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_GROQ_OSS_MODEL = "openai/gpt-oss-120b"
 
-_SECRET_KEYS = ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLOUDRU_FOUNDATION_MODELS_API_KEY", "GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN")
+_SECRET_KEYS = (
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_COMPATIBLE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "CLOUDRU_FOUNDATION_MODELS_API_KEY",
+    "GITHUB_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+)
+_LOCAL_RUNTIME_KEYS = (
+    "LOCAL_MODEL_SOURCE",
+    "LOCAL_MODEL_FILENAME",
+    "LOCAL_MODEL_CHAT_FORMAT",
+    "USE_LOCAL_MAIN",
+    "USE_LOCAL_CODE",
+    "USE_LOCAL_LIGHT",
+    "USE_LOCAL_CONSCIOUSNESS",
+    "USE_LOCAL_FALLBACK",
+)
+_GROQ_MODEL_KEYS = (
+    "OUROBOROS_MODEL",
+    "OUROBOROS_MODEL_CODE",
+    "OUROBOROS_MODEL_LIGHT",
+    "OUROBOROS_MODEL_FALLBACK",
+)
 
 
 def get_colab_secret(name: str, *, required: bool = True) -> str:
@@ -59,8 +85,10 @@ def collect_colab_secrets() -> Dict[str, str]:
     # endpoints have no universal model default and need explicit OUROBOROS_MODEL_*
     # config, so they are an advanced manual path, not part of the quick launch.
     provider_keys = (
+        "GROQ_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
+        "OPENAI_COMPATIBLE_API_KEY",
         "ANTHROPIC_API_KEY",
         "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     )
@@ -68,6 +96,10 @@ def collect_colab_secrets() -> Dict[str, str]:
     out["TELEGRAM_BOT_TOKEN"] = get_colab_secret("TELEGRAM_BOT_TOKEN")
     for key in provider_keys:
         out[key] = get_colab_secret(key, required=False)
+    out["OPENAI_COMPATIBLE_BASE_URL"] = get_colab_secret("OPENAI_COMPATIBLE_BASE_URL", required=False)
+    out["GROQ_MODEL"] = get_colab_secret("GROQ_MODEL", required=False)
+    out["GROQ_CONTEXT_LENGTH"] = get_colab_secret("GROQ_CONTEXT_LENGTH", required=False)
+    out["GROQ_MAX_TOKENS"] = get_colab_secret("GROQ_MAX_TOKENS", required=False)
     if not any(out.get(key) for key in provider_keys):
         # Ensure at least one runnable provider; OpenRouter is the default route.
         out["OPENROUTER_API_KEY"] = get_colab_secret("OPENROUTER_API_KEY")
@@ -78,6 +110,57 @@ def collect_colab_secrets() -> Dict[str, str]:
 def masked_secret_status(settings: Dict[str, Any]) -> Dict[str, bool]:
     """Expose configured/missing status only; never return secret values."""
     return {key: bool(str(settings.get(key, "") or "").strip()) for key in _SECRET_KEYS}
+
+
+def _strip_openai_compatible_prefix(model: str) -> str:
+    text = str(model or "").strip()
+    if text.startswith("openai-compatible::"):
+        return text.removeprefix("openai-compatible::").strip()
+    return text
+
+
+def _apply_groq_oss_profile(settings: Dict[str, Any], secrets: Dict[str, str]) -> None:
+    """Configure Groq's OpenAI-compatible OSS route and clear local GGUF routing."""
+    groq_key = str(secrets.get("GROQ_API_KEY") or "").strip()
+    if not groq_key:
+        return
+
+    explicit_model = _strip_openai_compatible_prefix(str(secrets.get("GROQ_MODEL") or "").strip())
+    existing_model_raw = str(settings.get("OUROBOROS_MODEL") or "").strip()
+    existing_compatible_model = (
+        _strip_openai_compatible_prefix(existing_model_raw)
+        if existing_model_raw.startswith("openai-compatible::")
+        else ""
+    )
+    model = explicit_model or existing_compatible_model or DEFAULT_GROQ_OSS_MODEL
+    qualified_model = f"openai-compatible::{model}"
+
+    settings["OPENAI_COMPATIBLE_API_KEY"] = groq_key
+    settings["OPENAI_COMPATIBLE_BASE_URL"] = GROQ_OPENAI_COMPATIBLE_BASE_URL
+    settings["OPENAI_COMPATIBLE_CONTEXT_LENGTH"] = (
+        str(secrets.get("GROQ_CONTEXT_LENGTH") or "").strip()
+        or str(settings.get("OPENAI_COMPATIBLE_CONTEXT_LENGTH") or "").strip()
+        or "131072"
+    )
+    settings["OPENAI_COMPATIBLE_MAX_TOKENS"] = (
+        str(secrets.get("GROQ_MAX_TOKENS") or "").strip()
+        or str(settings.get("OPENAI_COMPATIBLE_MAX_TOKENS") or "").strip()
+        or "8192"
+    )
+
+    for key in _GROQ_MODEL_KEYS:
+        settings[key] = qualified_model
+    if not str(settings.get("OUROBOROS_MODEL_CONSCIOUSNESS") or "").strip():
+        settings["OUROBOROS_MODEL_CONSCIOUSNESS"] = qualified_model
+    settings["OUROBOROS_REVIEW_MODELS"] = ",".join([qualified_model, qualified_model])
+    settings["OUROBOROS_SCOPE_REVIEW_MODEL"] = qualified_model
+    settings["OUROBOROS_SCOPE_REVIEW_MODELS"] = qualified_model
+
+    for key in _LOCAL_RUNTIME_KEYS:
+        if key.startswith("USE_LOCAL_"):
+            settings[key] = False
+        else:
+            settings[key] = ""
 
 
 def build_colab_settings(secrets: Dict[str, str], *, github_repo: str = "", total_budget: float = 10.0, runtime_mode: str = "advanced", max_workers: int = 1, models: Dict[str, str] | None = None, network_password: str = "", existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -98,6 +181,9 @@ def build_colab_settings(secrets: Dict[str, str], *, github_repo: str = "", tota
         # returns "") does NOT wipe a credential already persisted on Drive.
         if (key in settings or key == "TELEGRAM_BOT_TOKEN") and str(value or "").strip():
             settings[key] = str(value)
+    if str(secrets.get("OPENAI_COMPATIBLE_BASE_URL") or "").strip():
+        settings["OPENAI_COMPATIBLE_BASE_URL"] = str(secrets["OPENAI_COMPATIBLE_BASE_URL"]).strip()
+    _apply_groq_oss_profile(settings, secrets)
     if github_repo:
         settings["GITHUB_REPO"] = github_repo
     settings["TOTAL_BUDGET"] = float(total_budget)

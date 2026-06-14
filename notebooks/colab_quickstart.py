@@ -79,6 +79,11 @@ print("Personal origin:", origin_result)
 print("Settings:", settings_path)
 
 # %%
+if settings.get("OPENAI_COMPATIBLE_BASE_URL") == "https://api.groq.com/openai/v1":
+    print("Running Groq OSS smoke test...")
+    subprocess.run([sys.executable, "-m", "ouroboros.groq_api_smoke"], check=True)
+
+# %%
 server = subprocess.Popen(
     server_command(REPO_DIR),
     cwd=str(REPO_DIR),

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import ouroboros.pricing as pricing_module
 from unittest.mock import patch
@@ -114,6 +116,25 @@ def test_openai_compatible_max_tokens_env_override(monkeypatch):
     )
 
     assert kwargs["max_tokens"] == 1024
+
+
+def test_openai_compatible_max_tokens_setting_applies_to_env(monkeypatch):
+    from ouroboros.config import apply_settings_to_env
+
+    monkeypatch.delenv("OPENAI_COMPATIBLE_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("OPENAI_COMPATIBLE_CONTEXT_LENGTH", raising=False)
+
+    try:
+        apply_settings_to_env({
+            "OPENAI_COMPATIBLE_MAX_TOKENS": "4096",
+            "OPENAI_COMPATIBLE_CONTEXT_LENGTH": "131072",
+        })
+
+        assert os.environ["OPENAI_COMPATIBLE_MAX_TOKENS"] == "4096"
+        assert os.environ["OPENAI_COMPATIBLE_CONTEXT_LENGTH"] == "131072"
+    finally:
+        os.environ.pop("OPENAI_COMPATIBLE_MAX_TOKENS", None)
+        os.environ.pop("OPENAI_COMPATIBLE_CONTEXT_LENGTH", None)
 
 
 def test_openai_compatible_max_tokens_zero_disables_cap(monkeypatch):

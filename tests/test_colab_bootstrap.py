@@ -19,6 +19,42 @@ def test_build_colab_settings_merges_existing_owner_choices():
     assert "_settings_file_exists" not in out
     assert out["OPENROUTER_API_KEY"] == "k"
 
+def test_build_colab_settings_groq_profile_clears_local_runtime():
+    from ouroboros.colab_bootstrap import build_colab_settings
+    existing = {
+        "LOCAL_MODEL_SOURCE": "Qwen/Qwen2.5-72B-Instruct-GGUF",
+        "LOCAL_MODEL_FILENAME": "huge.gguf",
+        "USE_LOCAL_MAIN": True,
+        "USE_LOCAL_CODE": True,
+        "USE_LOCAL_LIGHT": True,
+        "USE_LOCAL_CONSCIOUSNESS": True,
+        "USE_LOCAL_FALLBACK": True,
+    }
+    out = build_colab_settings({
+        "GROQ_API_KEY": "gsk_test_key_1234567890",
+        "GROQ_MODEL": "openai/gpt-oss-120b",
+    }, existing=existing)
+    expected_model = "openai-compatible::openai/gpt-oss-120b"
+    assert out["OPENAI_COMPATIBLE_API_KEY"] == "gsk_test_key_1234567890"
+    assert out["OPENAI_COMPATIBLE_BASE_URL"] == "https://api.groq.com/openai/v1"
+    assert out["OUROBOROS_MODEL"] == expected_model
+    assert out["OUROBOROS_MODEL_CODE"] == expected_model
+    assert out["OUROBOROS_REVIEW_MODELS"] == f"{expected_model},{expected_model}"
+    assert out["LOCAL_MODEL_SOURCE"] == ""
+    assert out["LOCAL_MODEL_FILENAME"] == ""
+    assert out["LOCAL_MODEL_CHAT_FORMAT"] == ""
+    assert out["USE_LOCAL_MAIN"] is False
+    assert out["USE_LOCAL_CODE"] is False
+    assert out["USE_LOCAL_LIGHT"] is False
+    assert out["USE_LOCAL_CONSCIOUSNESS"] is False
+    assert out["USE_LOCAL_FALLBACK"] is False
+
+def test_quickstart_runs_groq_smoke_before_server():
+    import pathlib
+    source = pathlib.Path(__file__).resolve().parents[1].joinpath("notebooks", "colab_quickstart.py").read_text(encoding="utf-8")
+    assert "ouroboros.groq_api_smoke" in source
+    assert source.index("ouroboros.groq_api_smoke") < source.index("server = subprocess.Popen")
+
 def test_quickstart_uses_clone_or_update_repo_helper():
     import pathlib
     source = pathlib.Path(__file__).resolve().parents[1].joinpath("notebooks", "colab_quickstart.py").read_text(encoding="utf-8")
